@@ -6,15 +6,23 @@
 #include <semaphore.h>
 #include <syncstream>
 
+#define CHAIRS_AMOUNT 3    // Número de cadeiras na sala de espera.
+#define CUT_TIME 1          // Tempo de corte: 1s
+#define BARD_AMOUNT 2       // Número de barbeiros
+#define CUSTUMER_AMOUNT 10  // Número de clientes
+
 std::thread * btid;
 std::vector<std::thread *> tid;
 
-static sem_t waitingRoom;
-static sem_t barberChair;
-static sem_t barberPillow;
-static sem_t seatBelt;
+static sem_t customers;
+static sem_t barbers;
+static sem_t mutex;
 
-static int allDone = 0;
+int numberOfFreeSeats = CHAIRS_AMOUNT;   //Counter for Vacant seats in waiting room
+int seatPocket[CHAIRS_AMOUNT];           //To exchange pid between customer and barber
+int sitHereNext = 0;                  //Index for next legitimate seat
+int serveMeNext = 0;                  //Index to choose a candidate for cutting hair
+static int count = 0;                 //Counter of No. of customers
 
 void waitSecs(int secs) {
     int len;
@@ -22,83 +30,100 @@ void waitSecs(int secs) {
     sleep(len);
 }
 
-void customer (int num) {
-    // Chegada do cliente
-    std::osyncstream(std::cout) << "Cliente " << num << " chegou na barbearia.\n";
+void customerProcess(int costumerID) {   
+    int mySeat;
+    
+    sem_wait(&mutex);               // Bloqueio da área mutua. Proteção das mudanças do assento.
+    count++;                        // Chegada de clientes
 
-    // Espera um lugar livre na sala de espera
-    sem_wait(&waitingRoom);
-    std::osyncstream(std::cout) << "Cliente " << num << " entrou na sala de espera.\n";
+    printf("Cliente %d chegou na barbearia.\n", costumerID);
+    
+    if ( numberOfFreeSeats > 0 ) {
+        --numberOfFreeSeats;        // Número de cadeiras restante na sala de espera
 
-    // Espera a cadeira do barbeiro ficar livre
-    sem_wait(&barberChair);
+        printf("Cliente %d entrou na sala de espera.\n", costumerID);
 
-    // Sai da sala de espera quando a cadeira do barbeira estiver livre
-    sem_post(&waitingRoom);
+        sitHereNext = (++sitHereNext) % CHAIRS_AMOUNT;  // Eschole a próxima cadeira vaga para se sentar
+        mySeat = sitHereNext;
 
-    // O cliente acorda do barbeiro
-    std::osyncstream(std::cout) << "Cliente " << num << " acordou o barbeiro.\n";
-    sem_post(&barberPillow);
+        seatPocket[mySeat] = costumerID;
 
-    // Espera o barbeiro finalizar o corte
-    sem_wait(&seatBelt);
+        sem_post(&mutex);                  // libera o bloqueio da área mútua
+        sem_post(&barbers);                // acorda um barberio
 
-    // O cliente sai da barbearia
-    sem_post(&barberChair);
-    std::osyncstream(std::cout) << "Cliente " << num << " saiu da barbearia.\n";
+        sem_wait(&customers);              // entra na fila de cliente em espera
+
+        sem_wait(&mutex);                  // bloqueia um área exclusiva
+            numberOfFreeSeats++;                // sai da sala de espera e vai para a cadeira do barbeiro
+        sem_post(&mutex);                  // libera uma área exclusica
+
+        printf("Cliente %d deixou a barbearia.\n", costumerID);
+
+    } else {
+       sem_post(&mutex);  //Release the mutex and customer leaves without haircut
+       printf("Cliente %d não encontrou lugar na sala de espera e saiu da barbearia.\n", costumerID);
+    }
+
+    pthread_exit(0);
 }
 
-void barber () {
+void barberEvent(int barberID) {   
+    int myNext, C;
     
-    while (!allDone) {
+    printf("Barbeiro %d chegou na barbearia.\n", barberID);
 
-        // O barbeiro estará dormindo até que alguém o acorde
-        std::osyncstream(std::cout) << "O barbeiro está dormindo\n";
-        sem_wait(&barberPillow);
+    while (true) {   
+        printf("Barbeiro %d foi dormir.\n", barberID);
 
-        if (!allDone) {
-            
-            std::osyncstream(std::cout) << "O barbeiro está cortando cabelo\n";
-            waitSecs(2);
-            std::osyncstream(std::cout) << "O barbeiro finalizou o corte de cabelo.\n";
-
-            // O barbeiro avisa ao cliente que o corte foi finalizado
-            sem_post(&seatBelt);
-        } else {
-            std::osyncstream(std::cout) << "O barbeiro está indo para casa.\n";
-        }
+        sem_wait(&barbers);          // O barbeiro entra na fila dos barbeiros
+        sem_wait(&mutex);            // Bloqueia um área exclusiva
+          serveMeNext = (++serveMeNext) % CHAIRS_AMOUNT;  // escolhe o próximo cliente
+          myNext = serveMeNext;
+          C = seatPocket[myNext];                  //Get selected customer's PID
+          seatPocket[myNext] = pthread_self();     //Leave own PID for customer
+        sem_post(&mutex);
+        sem_post(&customers);        
+        printf("Barbeiro %d acordou e está cortando o cabelo do cliente %d.\n",barberID,C);
+        sleep(CUT_TIME);
+        printf("Barbeiro %d finalizou o corte.\n",barberID);
     }
+}
+
+void wait() {
+     int x = rand() % (250000 - 50000 + 1) + 50000; 
+     srand(time(NULL));
+     usleep(x);
 }
 
 int main (void) {
-    int numCostumers = 10, numChairs = 2;
 
+    std::vector<std::thread *> barber,customer;
+    int i,status = 0;
 
-    if (sem_init(&waitingRoom, 0, numChairs) == -1)
-        std::cerr << "Error: waitingRoom" << '\n';
+    sem_init(&customers, 0, 0);
+    sem_init(&barbers, 0, 0);
+    sem_init(&mutex, 0, 1);
+
+    printf("Barbearia está aberta\n");
     
-    if (sem_init(&barberChair, 0, 1) == -1)
-        std::cerr << "Error: barberChair" << '\n';
-
-    if (sem_init(&barberPillow, 0, 0) == -1)
-        std::cerr << "Error: barberPillow" << '\n';
-
-    if (sem_init(&seatBelt, 0, 0) == -1)
-        std::cerr << "Error: seatBelt" << '\n';
-
-   btid = new std::thread(barber);
-
-    for (int i = 0; i < numCostumers; ++i) {
-        std::thread * t = new std::thread(customer, i);
-        tid.push_back(t);
+    for ( i = 0; i < BARD_AMOUNT; i++ ) {   
+        std::thread * t = new std::thread(barberEvent, i);
+        barber.push_back(t);
+        status = 1;
+        sleep(1);
     }
 
-    for (int i = 0; i < tid.size(); ++i)
-        tid[i]->join();
+    for ( i = 0; i < CUSTUMER_AMOUNT; i++ ) {   
+        std::thread * t = new std::thread(customerProcess, i);
+        customer.push_back(t);
+        status=1;
+        wait();
+    }
 
-    allDone = 1;
-    sem_post(&barberPillow);
-    btid->join();
+    for ( i = 0; i < CUSTUMER_AMOUNT; i++ )   
+        customer[i]->join();
 
-    return EXIT_SUCCESS;
+    printf("Barbearia fechou!\n");
+    
+    exit(EXIT_SUCCESS);
 }
