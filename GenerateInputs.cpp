@@ -1,7 +1,5 @@
 #include <iostream>
 
-static const int n = 10;
-
 enum CostumerCategory {
 	PAUSE,      // Pausa 
 	OFFICER,    // Oficial
@@ -9,8 +7,12 @@ enum CostumerCategory {
 	CORPORAL    // Cabo
 };
 
-int main (void) {
-    int category, cutHairTime;
+int main (int argc, char *argv[]) {
+    int category, cutHairTime, n;
+
+    if ( argc == 2 ) {
+		n = atoi(argv[1]);
+	}
 
 	srand(time(NULL));
 
